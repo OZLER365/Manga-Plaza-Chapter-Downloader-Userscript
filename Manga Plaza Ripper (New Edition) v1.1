@@ -1,0 +1,100 @@
+// ==UserScript==
+// @name         MangaPlaza Ripper
+// @namespace    https://greasyfork.org/en/users/1553223-ozler365
+// @version      1.1
+// @description  Captures image blobs on mangaplaza, downloads directly to ZIP root, and uses tab title for filename.
+// @author       ozler365
+// @match        https://reader.mangaplaza.com/*
+// @license      MIT
+// @icon         https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRxPhS0MYkfiZ0LGfDQaF7jedEY76T9dZybag&s
+// @run-at       document-start
+// @grant        none
+// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
+// @downloadURL  https://update.greasyfork.org/scripts/560991/MangaPlaza%20Ripper.user.js
+// @updateURL    https://update.greasyfork.org/scripts/560991/MangaPlaza%20Ripper.meta.js
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const MIN_SIZE = 2048; // 2KB min size
+    const captured = [];
+    const hashes = new Set();
+    let btn, label;
+
+    // --- Helper: SHA-256 Hash for Deduplication ---
+    async function hashBlob(blob) {
+        const buf = await blob.arrayBuffer();
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+    }
+
+    // --- Core: Hook URL.createObjectURL ---
+    const origCreate = URL.createObjectURL;
+    URL.createObjectURL = function(blob) {
+        const url = origCreate.apply(this, arguments);
+        if (blob instanceof Blob && blob.type.startsWith('image/') && blob.size >= MIN_SIZE) {
+            hashBlob(blob).then(h => {
+                if (!hashes.has(h)) {
+                    hashes.add(h);
+                    captured.push({ blob, ext: blob.type.split('/')[1] || 'jpg' });
+                    if(btn) label.textContent = captured.length;
+                }
+            });
+        }
+        return url;
+    };
+
+    // --- Download Logic ---
+    async function downloadZip() {
+        if (!captured.length) return alert("No images captured. Scroll first.");
+        const oldText = btn.textContent;
+        btn.textContent = "Zipping...";
+        btn.disabled = true;
+
+        const zip = new JSZip();
+        const pad = String(captured.length).length;
+
+        // Add files directly to ZIP root (No subfolder)
+        captured.forEach((img, i) => {
+            zip.file(`image_${String(i + 1).padStart(pad, '0')}.${img.ext}`, img.blob);
+        });
+
+        try {
+            const content = await zip.generateAsync({ type: "blob" });
+            
+            // Sanitize Tab Title for Filename
+            const title = document.title.replace(/[<>:"/\\|?*]/g, "").trim() || "MangaPlaza_Download";
+            
+            const a = document.createElement("a");
+            a.href = origCreate(content); // Use original to bypass our hook
+            a.download = `${title}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        } catch (e) {
+            console.error(e);
+            alert("Error creating ZIP");
+        }
+        btn.textContent = oldText;
+        btn.disabled = false;
+    }
+
+    // --- Minimal UI ---
+    window.addEventListener('DOMContentLoaded', () => {
+        const div = document.createElement('div');
+        div.style.cssText = "position:fixed; bottom:20px; right:20px; z-index:99999; background:#2563eb; color:#fff; padding:10px; border-radius:8px; font-family:sans-serif; box-shadow:0 4px 6px rgba(0,0,0,0.2); font-size:13px; display:flex; gap:10px; align-items:center;";
+        
+        div.innerHTML = `<b>Blob+</b> <span id="mp-count" style="background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:4px;">0</span>`;
+        
+        btn = document.createElement('button');
+        btn.textContent = "Download";
+        btn.style.cssText = "border:none; background:#fff; color:#2563eb; padding:4px 8px; border-radius:4px; cursor:pointer; font-weight:600;";
+        btn.onclick = downloadZip;
+
+        div.appendChild(btn);
+        document.body.appendChild(div);
+        label = document.getElementById('mp-count');
+    });
+})();
